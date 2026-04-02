@@ -33,8 +33,13 @@
     .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
     .full{grid-column:1/-1}
     .label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
-    .input,.textarea{width:100%;max-width:100%;min-width:0;padding:11px 12px;background:#0f172a;color:var(--text);border:1px solid var(--line);border-radius:12px}
-    input[type="date"].input{-webkit-appearance:none;appearance:none;min-width:0}
+    .input,.textarea{display:block;width:100%;max-width:100%;min-width:0;padding:11px 12px;background:#0f172a;color:var(--text);border:1px solid var(--line);border-radius:12px}
+    input[type="date"].input{min-width:0;max-width:100%;inline-size:100%}
+    #detail-prod-date{display:block;inline-size:100%;max-inline-size:100%;min-inline-size:0;overflow:hidden}
+    #detail-prod-date::-webkit-date-and-time-value{min-width:0;text-align:left}
+    #detail-prod-date::-webkit-datetime-edit{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    #detail-prod-date::-webkit-datetime-edit-fields-wrapper{min-width:0;overflow:hidden}
+    #detail-prod-date::-webkit-calendar-picker-indicator{flex-shrink:0}
     .textarea{min-height:92px;resize:vertical}
     .detail-matrix{display:grid;grid-template-columns:1fr 1fr;column-gap:10px;row-gap:0;margin-top:12px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#111b2c}
     .detail-matrix-group{background:#111b2c}
@@ -107,6 +112,8 @@
       .actions .status{display:none}
       .btn.inline{padding:10px;font-size:13px}
       .fields>*{min-width:0}
+      #detail-production-form .full{min-width:0;max-width:100%}
+      #detail-prod-date{font-size:16px}
       .project-name{font-size:17px}
       .project-inline{gap:5px}
       .project-chip{font-size:10px;padding:6px 7px;gap:4px}
