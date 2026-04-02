@@ -147,6 +147,7 @@
       <div class="row"><strong>Fila de envio</strong><span id="queue-count" class="mono">0</span></div>
       <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
         <button id="sync-now" class="btn alt" type="button">Sincronizar agora</button>
+        <button id="pull-data" class="btn alt" type="button">Trazer dados</button>
         <button id="clear-local" class="btn danger" type="button">Limpar local</button>
       </div>
     </section>
@@ -352,8 +353,10 @@
 
   <script>
 const STORAGE_KEY='perfuracao-offline-v1';
+const REMOTE_COLLECTIONS_KEY='perfuracao-remote-collections-v1';
 const firebaseConfig=window.__FIREBASE_CONFIG__||{apiKey:'AIzaSyAdFp57jq3Oi_040bJIJnlllYrp5I3MP_w',authDomain:'yanm-e7e80.firebaseapp.com',projectId:'yanm-e7e80',storageBucket:'yanm-e7e80.firebasestorage.app',messagingSenderId:'947763384698',appId:'1:947763384698:web:144f14dcf80c13d71446c3'};
 const collectionName=window.__FIREBASE_COLLECTION__||'planejamento_perfuracao';
+const projectCatalogCollection=window.__FIREBASE_PROJECT_CATALOG__||'planejamento_catalogo';
 let state={records:[],queue:[],activeProjectId:null},db=null,isSyncing=false,unsubscribe=null;
 let selectedProjectId=null;
 let confirmAction=null;
@@ -1346,6 +1349,7 @@ $('delete-project').onclick=()=>{
   });
 };
 $('sync-now').onclick=()=>{queueAllProjectsForSync();sync();};
+$('pull-data').onclick=()=>{pullAllProjectsFromFirebase();};
 $('clear-local').onclick=()=>openConfirmModal('Apagar todos os dados locais deste aparelho?',()=>{state={records:[],queue:[],activeProjectId:null};save();render();closeDrawer();toast('Dados locais apagados')});
 $('close-confirm').onclick=closeConfirmModal;
 $('confirm-cancel').onclick=closeConfirmModal;
@@ -1551,6 +1555,170 @@ function buildProjectSnapshot(project){
   };
 }
 
+function buildCatalogPayload(project){
+  return {
+    project_id:project.project_id,
+    project_name:project.project_name||'',
+    collection_name:project.firebase_collection||slugifyCollectionName(project.project_name),
+    updated_at:new Date().toISOString()
+  };
+}
+
+function getStoredRemoteCollections(){
+  try{
+    const saved=JSON.parse(localStorage.getItem(REMOTE_COLLECTIONS_KEY)||'[]');
+    return Array.isArray(saved)?saved.filter(Boolean):[];
+  }catch{
+    return [];
+  }
+}
+
+function storeRemoteCollections(collectionNames){
+  const merged=[...new Set([...getStoredRemoteCollections(),...(collectionNames||[])].filter(Boolean))];
+  localStorage.setItem(REMOTE_COLLECTIONS_KEY,JSON.stringify(merged));
+  return merged;
+}
+
+function resolveRemoteCollectionCandidates(extraCollectionNames){
+  const localProjectCollections=state.records
+    .filter(record=>record.type==='project'&&record.firebase_collection)
+    .map(record=>record.firebase_collection);
+  const configuredCollections=Array.isArray(window.__FIREBASE_PROJECT_COLLECTIONS__)?window.__FIREBASE_PROJECT_COLLECTIONS__:[];
+  return [...new Set([...(extraCollectionNames||[]),...configuredCollections,...localProjectCollections,...getStoredRemoteCollections()].filter(Boolean))];
+}
+
+async function loadLegacyCollectionCandidates(){
+  try{
+    const legacySnap=await db.collection(collectionName).get();
+    const collectionNames=legacySnap.docs
+      .map(doc=>doc.data()||{})
+      .map(item=>item.firebase_collection||item.collection_name)
+      .filter(Boolean);
+    if(collectionNames.length)storeRemoteCollections(collectionNames);
+    return collectionNames;
+  }catch(error){
+    console.error(error);
+    return [];
+  }
+}
+
+async function importProjectsFromCollections(collectionNames){
+  let importedCount=0;
+  for(const remoteCollectionName of [...new Set((collectionNames||[]).filter(Boolean))]){
+    const snapshotDoc=await db.collection(remoteCollectionName).doc('planejamento').get();
+    if(!snapshotDoc.exists)continue;
+    if(upsertRemoteProjectSnapshot(snapshotDoc.data(),remoteCollectionName))importedCount++;
+  }
+  if(importedCount)storeRemoteCollections(collectionNames);
+  return importedCount;
+}
+
+function projectFromSnapshot(snapshot, fallbackCollectionName){
+  const data=snapshot?.main_data||{};
+  const collectionNameFromSnapshot=snapshot?.collection_name||fallbackCollectionName||slugifyCollectionName(snapshot?.project_name);
+  const projectId=snapshot?.project_id||uid();
+  return {
+    type:'project',
+    local_id:projectId,
+    project_id:projectId,
+    project_name:snapshot?.project_name||'Projeto sem nome',
+    firebase_collection:collectionNameFromSnapshot,
+    total_holes:Number(data.total_holes||0),
+    start_date:data.start_date||'',
+    end_date:data.end_date||'',
+    fire_number:data.fire_number||'',
+    hole_average:data.hole_average||'',
+    mine_number:data.mine_number||'',
+    inclination:data.inclination||'',
+    total_drilled:data.total_drilled||'',
+    total_volume:data.total_volume||'',
+    linear_meter:data.linear_meter||'',
+    bench_height:data.bench_height||'',
+    subdrilling:data.subdrilling||'',
+    burden:data.burden||'',
+    spacing:data.spacing||'',
+    rock_density:data.rock_density||'',
+    tons:data.tons||'',
+    specific_drill_m3:data.specific_drill_m3||'',
+    specific_drill_ton:data.specific_drill_ton||'',
+    pumped_load:data.pumped_load||'',
+    cartridge_load:data.cartridge_load||'',
+    charge_ratio_m3:data.charge_ratio_m3||'',
+    charge_ratio_ton:data.charge_ratio_ton||'',
+    notes:data.notes||'',
+    status:snapshot?.status||'active',
+    created_at:snapshot?.created_at||new Date().toISOString()
+  };
+}
+
+function productionsFromSnapshot(snapshot, projectId){
+  return (snapshot?.fractions||[]).map((item,index)=>({
+    type:'production',
+    local_id:item.local_id||`${projectId}-fraction-${index}`,
+    project_id:projectId,
+    date:item.date||'',
+    holes_done:Number(item.holes_done||0),
+    notes:item.notes||'',
+    created_at:item.created_at||new Date().toISOString()
+  }));
+}
+
+function upsertRemoteProjectSnapshot(snapshot, fallbackCollectionName){
+  if(!snapshot?.project_id)return false;
+  const projectRecord=projectFromSnapshot(snapshot,fallbackCollectionName);
+  const productionRecords=productionsFromSnapshot(snapshot,projectRecord.project_id);
+  state.records=state.records.filter(record=>record.project_id!==projectRecord.project_id && !(record.type==='project'&&record.project_id===projectRecord.project_id));
+  state.records.push(projectRecord,...productionRecords);
+  state.queue=state.queue.filter(op=>op.project_id!==projectRecord.project_id && op.collection_name!==projectRecord.firebase_collection);
+  if(!state.activeProjectId)state.activeProjectId=projectRecord.project_id;
+  return true;
+}
+
+async function pullAllProjectsFromFirebase(){
+  if(isSyncing){
+    toast('Aguarde a sincronizacao terminar.',true);
+    return;
+  }
+  if(!navigator.onLine){
+    toast('Sem internet para buscar os dados.',true);
+    return;
+  }
+  try{
+    isSyncing=true;
+    updateStatus();
+    const ready=await ensureFirebase();
+    if(!ready){
+      toast('Nao foi possivel conectar ao Firebase.',true);
+      return;
+    }
+    const suggestedCollections=resolveRemoteCollectionCandidates(await loadLegacyCollectionCandidates()).join(', ');
+    const manualCollections=window.prompt('Digite os nomes das colecoes do Firebase separados por virgula.\nExemplo: bancada_04, bancada_abril_01',suggestedCollections);
+    const parsedCollections=(manualCollections||'')
+      .split(',')
+      .map(item=>item.trim())
+      .filter(Boolean);
+    if(!parsedCollections.length){
+      toast('Importacao cancelada.',true);
+      return;
+    }
+    const importedCount=await importProjectsFromCollections(parsedCollections);
+    if(importedCount===0){
+      toast('Nenhum projeto valido foi importado.',true);
+      return;
+    }
+    save();
+    render();
+    closeDrawer();
+    toast(`${importedCount} projeto(s) trazido(s) do Firebase.`);
+  }catch(error){
+    console.error(error);
+    toast('Falha ao buscar os dados do Firebase.',true);
+  }finally{
+    isSyncing=false;
+    updateStatus();
+  }
+}
+
 function queueProjectSync(projectId){
   const project=state.records.find(r=>r.type==='project'&&r.project_id===projectId);
   if(!project)return false;
@@ -1753,10 +1921,14 @@ async function sync(){
       if(op.type==='sync-project'){
         const project=state.records.find(r=>r.type==='project'&&r.project_id===op.project_id);
         if(!project)continue;
-        const collectionRef=db.collection(project.firebase_collection||op.collection_name||slugifyCollectionName(project.project_name));
+        const resolvedCollectionName=project.firebase_collection||op.collection_name||slugifyCollectionName(project.project_name);
+        const collectionRef=db.collection(resolvedCollectionName);
         await collectionRef.doc('planejamento').set(buildProjectSnapshot(project),{merge:true});
+        await db.collection(projectCatalogCollection).doc(project.project_id).set(buildCatalogPayload({...project,firebase_collection:resolvedCollectionName}),{merge:true});
+        storeRemoteCollections([resolvedCollectionName]);
       }else if(op.type==='delete-project'&&op.collection_name){
         await db.collection(op.collection_name).doc('planejamento').delete();
+        if(op.project_id)await db.collection(projectCatalogCollection).doc(op.project_id).delete();
       }
     }
     state.queue=[];
