@@ -12,6 +12,7 @@
   <style>
     :root{--bg:#0f172a;--card:#1e293b;--line:#334155;--text:#f1f5f9;--muted:#94a3b8;--accent:#f97316;--ok:#166534;--warn:#854d0e;--bad:#7f1d1d}
     *{box-sizing:border-box}body{margin:0;background:#0f172a;color:var(--text);font-family:Segoe UI,Tahoma,sans-serif}
+    body.modal-open{position:fixed;width:100%;overflow:hidden}
     button,input,textarea{font:inherit}
     .app{max-width:760px;margin:0 auto;padding:10px}
     .bar,.card,.modal,.drawer{background:rgba(30,41,59,.96);border:1px solid var(--line);border-radius:18px}
@@ -32,7 +33,8 @@
     .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
     .full{grid-column:1/-1}
     .label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
-    .input,.textarea{width:100%;padding:11px 12px;background:#0f172a;color:var(--text);border:1px solid var(--line);border-radius:12px}
+    .input,.textarea{width:100%;max-width:100%;min-width:0;padding:11px 12px;background:#0f172a;color:var(--text);border:1px solid var(--line);border-radius:12px}
+    input[type="date"].input{-webkit-appearance:none;appearance:none;min-width:0}
     .textarea{min-height:92px;resize:vertical}
     .detail-matrix{display:grid;grid-template-columns:1fr 1fr;column-gap:10px;row-gap:0;margin-top:12px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#111b2c}
     .detail-matrix-group{background:#111b2c}
@@ -81,9 +83,14 @@
     .drawer-head,.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
     .drawer .card{margin-bottom:12px}
     .drawer-tabs{display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:12px}
-    .modal-wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:10px;z-index:30}
+    .modal-wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:10px;z-index:30;overscroll-behavior:contain}
     #detail-modal-overlay{z-index:30}
-    #detail-modal-wrap{z-index:40}
+    #detail-modal-wrap{z-index:40;overflow-x:hidden}
+    #detail-modal-wrap .modal{overflow-x:hidden}
+    #detail-content,#detail-history,#detail-production-form{min-width:0}
+    #detail-content .row{flex-wrap:wrap;align-items:flex-start}
+    #detail-content .row>strong{min-width:0;overflow-wrap:anywhere}
+    #detail-content .row>div{min-width:0;flex-wrap:wrap;justify-content:flex-end}
     #confirm-overlay{z-index:50}
     #confirm-wrap{z-index:60}
     #production-edit-overlay{z-index:70}
@@ -96,9 +103,10 @@
     .confirm-modal{width:min(420px,100%);padding:18px}
     .mini-modal{width:min(380px,100%);padding:18px}
     @media (max-width:640px){
-      .app{padding:8px}.sub{display:none}.tabs,.fields{grid-template-columns:1fr}.title{font-size:17px}
+      .app{padding:8px}.sub{display:none}.tabs,.fields{grid-template-columns:minmax(0,1fr)}.title{font-size:17px}
       .actions .status{display:none}
       .btn.inline{padding:10px;font-size:13px}
+      .fields>*{min-width:0}
       .project-name{font-size:17px}
       .project-inline{gap:5px}
       .project-chip{font-size:10px;padding:6px 7px;gap:4px}
@@ -108,6 +116,8 @@
       .detail-matrix{grid-template-columns:1fr}
       .detail-matrix-group:nth-child(2n){border-left:0}
       .detail-matrix-group:not(:first-child){border-top:1px solid var(--line)}
+      #detail-modal-wrap{padding:0;align-items:stretch;overflow-x:hidden}
+      #detail-modal-wrap .modal{width:100%;height:100dvh;max-height:100dvh;border-radius:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
     }
   </style>
 </head>
@@ -417,6 +427,20 @@ function setStatus(text,kind){const el=$('sync-status');el.textContent=text;el.c
 function updateStatus(){if(!navigator.onLine)return setStatus(state.queue.length?'Offline com pendências':'Modo offline','offline');if(isSyncing)return setStatus('Sincronizando...','syncing');setStatus(state.queue.length?'Online com fila pendente':'Tudo sincronizado','online')}
 function activeProject(){return state.records.find(r=>r.type==='project'&&r.project_id===state.activeProjectId)||null}
 function projectProductions(pid){return state.records.filter(r=>r.type==='production'&&r.project_id===pid).sort((a,b)=>a.date.localeCompare(b.date))}
+function lockBodyScroll(){
+  if(document.body.classList.contains('modal-open'))return;
+  document.body.dataset.scrollY=String(window.scrollY||0);
+  document.body.style.top=`-${document.body.dataset.scrollY}px`;
+  document.body.classList.add('modal-open');
+}
+function unlockBodyScroll(){
+  if(!document.body.classList.contains('modal-open'))return;
+  const scrollY=Number(document.body.dataset.scrollY||0);
+  document.body.classList.remove('modal-open');
+  document.body.style.top='';
+  delete document.body.dataset.scrollY;
+  window.scrollTo(0,scrollY);
+}
 function formatDate(d){if(!d)return'-';const dt=new Date(d+'T00:00:00');return dt.toLocaleDateString('pt-BR')}
 function addDays(base,days){const dt=new Date(base+'T00:00:00');dt.setDate(dt.getDate()+days);return dt.toISOString().split('T')[0]}
 function projectStats(project){
@@ -460,8 +484,8 @@ function openProjectModal(projectId){
   $('project-name').focus();
 }
 function closeProjectModal(){$('project-modal-wrap').classList.add('hidden');$('project-modal-overlay').classList.add('hidden');editingProjectId=null}
-function openDetailModal(pid){selectedProjectId=pid;$('detail-prod-date').value=today();$('detail-modal-wrap').classList.remove('hidden');$('detail-modal-overlay').classList.remove('hidden');renderDetailModal()}
-function closeDetailModal(){$('detail-modal-wrap').classList.add('hidden');$('detail-modal-overlay').classList.add('hidden');selectedProjectId=null}
+function openDetailModal(pid){selectedProjectId=pid;$('detail-prod-date').value=today();lockBodyScroll();$('detail-modal-wrap').classList.remove('hidden');$('detail-modal-overlay').classList.remove('hidden');renderDetailModal()}
+function closeDetailModal(){$('detail-modal-wrap').classList.add('hidden');$('detail-modal-overlay').classList.add('hidden');selectedProjectId=null;unlockBodyScroll()}
 function resetProductionForm(){
   editingProductionId=null;
   $('detail-production-form').reset();
